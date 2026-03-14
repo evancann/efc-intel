@@ -28,12 +28,16 @@ SSL_BYPASS_SOURCES = [
 ]
 
 RSS_SOURCES = [
-    # British Fencing
+    # British Fencing -- primary feed + category backup
     ("British Fencing News",
      "https://www.britishfencing.com/feed/"),
-    # InsideTheGames sport RSS
+    ("British Fencing International",
+     "https://www.britishfencing.com/category/international-news/feed/"),
+    # InsideTheGames -- tag RSS (more reliable than sport RSS)
     ("InsideTheGames Fencing",
-     "https://www.insidethegames.biz/rss/sport/fencing"),
+     "https://www.insidethegames.biz/tags/fencing/rss"),
+    ("InsideTheGames FIE",
+     "https://www.insidethegames.biz/tags/fie/rss"),
     # Google News -- broad fencing news
     ("Google News EFC FIE",
      "https://news.google.com/rss/search?q=EFC+FIE+fencing+European&hl=en&gl=US&ceid=US:en"),
@@ -59,10 +63,16 @@ NITTER_ACCOUNTS = [
     ("EFC Twitter", "eurofencing"),
     ("FIE Twitter", "FIEfencing"),
 ]
+# Extended list of public Nitter instances -- tried in order until one responds
 NITTER_INSTANCES = [
     "https://nitter.privacyredirect.com",
     "https://nitter.poast.org",
+    "https://nitter.cz",
+    "https://nitter.1d4.us",
+    "https://nitter.fdn.fr",
     "https://nitter.net",
+    "https://lightbrd.com",
+    "https://nitter.unixfox.eu",
 ]
 
 HEADERS = {
@@ -134,8 +144,39 @@ def fetch_rss(label, url, max_items=12):
     except Exception as e:
         return f"SOURCE: {label}\nURL: {url}\nERROR: {e}"
 
+def fetch_twitter_syndication(handle, max_items=10):
+    """Fetch recent tweets via Twitter's public syndication API (no auth needed)."""
+    # Twitter's embed/syndication endpoint -- returns JSON for public accounts
+    url = f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{handle}?lang=en"
+    try:
+        ctx = ssl.create_default_context()
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
+            "Accept": "application/json, text/html, */*",
+            "Referer": f"https://twitter.com/{handle}",
+        })
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
+        # Extract tweet text from the JSON/HTML response
+        tweets = re.findall(r'"full_text"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
+        dates  = re.findall(r'"created_at"\s*:\s*"([^"]+)"', raw)
+        if tweets:
+            results = []
+            for i, tweet in enumerate(tweets[:max_items]):
+                tweet_clean = tweet.replace("\n", " ").replace('\"', '"')
+                # Skip retweets of others
+                if tweet_clean.startswith("RT @") and handle.lower() not in tweet_clean[:20].lower():
+                    continue
+                date = dates[i] if i < len(dates) else ""
+                results.append(f"  [{date}] {tweet_clean[:280]}")
+            if results:
+                return f"SOCMINT SOURCE: @{handle} (Twitter syndication API)\n" + "\n".join(results)
+    except Exception:
+        pass
+    return None
+
 def fetch_nitter_rss(handle, instances, max_items=10):
-    """Try multiple Nitter instances for a Twitter/X handle RSS feed."""
+    """Try multiple Nitter instances then fall back to Twitter syndication API."""
     for base in instances:
         url = f"{base}/{handle}/rss"
         try:
@@ -143,10 +184,10 @@ def fetch_nitter_rss(handle, instances, max_items=10):
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
             req = urllib.request.Request(url, headers={
-                "User-Agent": "Mozilla/5.0 (compatible; EFC-Intel/1.0)",
-                "Accept": "application/rss+xml, application/xml, */*",
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
+                "Accept": "application/rss+xml, application/xml, text/xml, */*",
             })
-            with urllib.request.urlopen(req, timeout=12, context=ctx) as resp:
+            with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
                 text = resp.read().decode("utf-8", errors="ignore")
             items = re.findall(r'<item>(.*?)</item>', text, re.DOTALL)
             if not items:
@@ -165,7 +206,11 @@ def fetch_nitter_rss(handle, instances, max_items=10):
                 return f"SOCMINT SOURCE: @{handle} via Nitter ({base})\n" + "\n".join(results)
         except Exception:
             continue
-    return f"SOCMINT SOURCE: @{handle} (Twitter/X)\nSTATUS: All Nitter instances unreachable -- no live data"
+    # All Nitter instances failed -- try Twitter syndication API directly
+    syndication = fetch_twitter_syndication(handle, max_items)
+    if syndication:
+        return syndication
+    return f"SOCMINT SOURCE: @{handle} (Twitter/X)\nSTATUS: Nitter unreachable and syndication API unavailable -- no live tweet data"
 
 print(f"Fetching sources...")
 intel_chunks = []
