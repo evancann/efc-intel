@@ -1,4 +1,4 @@
-import os, smtplib, datetime, time, json, gzip, re
+import os, smtplib, datetime, time, json, gzip, re, ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import urllib.request, urllib.parse
@@ -13,16 +13,22 @@ client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 # ---- Step 1: Fetch real pages (GitHub Actions HAS internet access) ----------
 
 SOURCES = [
-    ("EFC Portal News",   "https://www.eurofencing.info/news"),
     ("FIE Letters 2026",  "https://fie.org/fie/documents/letters/2026"),
     ("FIE News",          "https://fie.org/articles"),
     ("Sport&Politics",    "https://www.sportandpolitics.de"),
     ("Francsjeux EN",     "https://www.francsjeux.com/en"),
-    ("BritishFencing",    "https://www.britishfencing.com/news/"),
     ("InsideTheGames",    "https://www.insidethegames.biz/search?q=fencing"),
 ]
 
+# Sources requiring SSL bypass (self-signed or expired cert)
+SSL_BYPASS_SOURCES = [
+    ("EFC Portal News",   "https://www.eurofencing.info/news"),
+]
+
 RSS_SOURCES = [
+    # British Fencing is JS-rendered; use their RSS feed instead
+    ("British Fencing News RSS",
+     "https://www.britishfencing.com/feed/"),
     ("Google News - EFC FIE fencing",
      "https://news.google.com/rss/search?q=EFC+FIE+fencing+European&hl=en&gl=US&ceid=US:en"),
     ("Google News - fencing championship 2026",
@@ -44,10 +50,14 @@ def strip_html(text):
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-def fetch_html(label, url, max_chars=2500):
+def fetch_html(label, url, max_chars=2500, verify_ssl=True):
     try:
         req = urllib.request.Request(url, headers=HEADERS)
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        ctx = ssl.create_default_context()
+        if not verify_ssl:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        with urllib.request.urlopen(req, timeout=20, context=ctx) as resp:
             raw = resp.read()
             enc = resp.headers.get("Content-Encoding", "")
             if enc == "gzip":
@@ -79,11 +89,15 @@ def fetch_rss(label, url, max_items=12):
     except Exception as e:
         return f"SOURCE: {label}\nURL: {url}\nERROR: {e}"
 
-print(f"Fetching {len(SOURCES)} pages and {len(RSS_SOURCES)} RSS feeds...")
+print(f"Fetching {len(SOURCES)} pages, {len(SSL_BYPASS_SOURCES)} SSL-bypass pages, and {len(RSS_SOURCES)} RSS feeds...")
 intel_chunks = []
 
 for label, url in SOURCES:
-    intel_chunks.append(fetch_html(label, url))
+    intel_chunks.append(fetch_html(label, url, verify_ssl=True))
+    time.sleep(0.5)
+
+for label, url in SSL_BYPASS_SOURCES:
+    intel_chunks.append(fetch_html(label, url, verify_ssl=False))
     time.sleep(0.5)
 
 for label, url in RSS_SOURCES:
