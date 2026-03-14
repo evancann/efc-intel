@@ -1,20 +1,28 @@
 name: EFC Daily Intelligence Brief
+
 on:
   schedule:
-    - cron: "0 5 * * *"
-    - cron: "0 6 * * *"
+    - cron: "0 5 * * *"   # 07:00 Amsterdam winter (CET = UTC+1)
+    - cron: "0 4 * * *"   # 07:00 Amsterdam summer (CEST = UTC+2)
   workflow_dispatch:
+
 jobs:
   send-brief:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install anthropic
-      - run: python brief.py
+
+      - name: Install dependencies
+        run: pip install anthropic
+
+      - name: Run intelligence brief
+        run: python brief.py
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
