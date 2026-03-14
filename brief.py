@@ -18,6 +18,8 @@ SOURCES = [
     ("Sport&Politics",    "https://www.sportandpolitics.de"),
     ("Francsjeux EN",     "https://www.francsjeux.com/en"),
     ("The Inquisitor",    "https://www.the-inquisitor-magazine.com"),
+    # FFE -- French Fencing Federation (hosts 2026 European Championships)
+    ("FFE French Fencing", "https://www.ffescrime.fr/"),
 ]
 
 # Sources requiring SSL bypass (self-signed or expired cert)
@@ -29,27 +31,38 @@ RSS_SOURCES = [
     # British Fencing -- RSS avoids JS rendering issue
     ("British Fencing News",
      "https://www.britishfencing.com/feed/"),
-    # InsideTheGames -- RSS avoids 403 bot block on search page
+    # InsideTheGames -- sport-specific RSS + Google News backup
     ("InsideTheGames Fencing",
      "https://www.insidethegames.biz/rss/sport/fencing"),
+    ("Google News InsideTheGames Fencing",
+     "https://news.google.com/rss/search?q=site:insidethegames.biz+fencing&hl=en&gl=US&ceid=US:en"),
     # Google News -- EFC/FIE governance
     ("Google News EFC FIE",
      "https://news.google.com/rss/search?q=EFC+FIE+fencing+European&hl=en&gl=US&ceid=US:en"),
     # Google News -- fencing championships
     ("Google News Fencing 2026",
      "https://news.google.com/rss/search?q=fencing+championship+2026&hl=en&gl=US&ceid=US:en"),
-    # Google News -- EFC social/comms picked up by press
-    ("Google News EFC Social",
+    # ---- SOCMINT sources ----
+    # Google News picks up EFC/FIE Twitter & Instagram posts via press coverage
+    ("SOCMINT Google News EFC Social",
      "https://news.google.com/rss/search?q=%22European+Fencing+Confederation%22+OR+eurofencing&hl=en&gl=US&ceid=US:en"),
-    # Google News -- CyrusofChaos + Usmanov FIE commentary
-    ("Google News CyrusofChaos FIE",
-     "https://news.google.com/rss/search?q=CyrusofChaos+OR+%22Usmanov%22+fencing&hl=en&gl=US&ceid=US:en"),
-    # Nitter (public X/Twitter mirror) -- EFC official account
-    ("EFC Twitter via Nitter",
-     "https://nitter.poast.org/eurofencing/rss"),
-    # Nitter -- FIE official account
-    ("FIE Twitter via Nitter",
-     "https://nitter.poast.org/FIEfencing/rss"),
+    # CyrusofChaos Facebook -- most accessible via Google News search
+    ("SOCMINT Google News CyrusofChaos",
+     "https://news.google.com/rss/search?q=CyrusofChaos+fencing&hl=en&gl=US&ceid=US:en"),
+    # Usmanov / FIE governance social commentary
+    ("SOCMINT Google News FIE Governance",
+     "https://news.google.com/rss/search?q=%22Usmanov%22+fencing+OR+%22ElHusseiny%22+fencing&hl=en&gl=US&ceid=US:en"),
+    # EFC Instagram public page -- scrape public web viewer
+    ("SOCMINT EFC Instagram public",
+     "https://www.picuki.com/profile/eurofencing"),
+    # FIE Facebook public page -- Google News picks up posts
+    ("SOCMINT Google News FIE Facebook",
+     "https://news.google.com/rss/search?q=%22FIE+fencing%22+facebook+OR+instagram&hl=en&gl=US&ceid=US:en"),
+    # Nitter X/Twitter mirrors -- try multiple instances for resilience
+    ("SOCMINT EFC Twitter Nitter-1",
+     "https://nitter.privacyredirect.com/eurofencing/rss"),
+    ("SOCMINT FIE Twitter Nitter-1",
+     "https://nitter.privacyredirect.com/FIEfencing/rss"),
 ]
 
 HEADERS = {
@@ -87,22 +100,37 @@ def fetch_html(label, url, max_chars=2500, verify_ssl=True):
 
 def fetch_rss(label, url, max_items=12):
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "EFC-Intel/1.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; EFC-Intel/1.0)",
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        })
+        with urllib.request.urlopen(req, timeout=20, context=ctx) as resp:
             text = resp.read().decode("utf-8", errors="ignore")
         items = re.findall(r'<item>(.*?)</item>', text, re.DOTALL)
+        if not items:
+            # Try atom feed format
+            items = re.findall(r'<entry>(.*?)</entry>', text, re.DOTALL)
         results = []
         for item in items[:max_items]:
-            title = re.search(r'<title[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>', item, re.DOTALL)
-            link  = re.search(r'<link>(.*?)</link>', item, re.DOTALL)
-            desc  = re.search(r'<description[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</description>', item, re.DOTALL)
-            pubdate = re.search(r'<pubDate>(.*?)</pubDate>', item)
+            title   = re.search(r'<title[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>', item, re.DOTALL)
+            link    = re.search(r'<link[^>]*href=["\']([^"\']+)["\']', item) or re.search(r'<link>(.*?)</link>', item, re.DOTALL)
+            desc    = re.search(r'<description[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</description>', item, re.DOTALL) \
+                   or re.search(r'<content[^>]*>(.*?)</content>', item, re.DOTALL) \
+                   or re.search(r'<summary[^>]*>(.*?)</summary>', item, re.DOTALL)
+            pubdate = re.search(r'<pubDate>(.*?)</pubDate>', item) or re.search(r'<published>(.*?)</published>', item)
             t = title.group(1).strip() if title else ""
             l = link.group(1).strip() if link else ""
-            d = strip_html(desc.group(1))[:200] if desc else ""
+            d = strip_html(desc.group(1))[:250] if desc else ""
             p = pubdate.group(1).strip() if pubdate else ""
-            results.append(f"  [{p}] {t} | {l}\n  {d}")
-        return f"SOURCE: {label}\nURL: {url}\n" + "\n".join(results)
+            if t:
+                results.append(f"  [{p}] {t}\n  {d}\n  URL: {l}")
+        if results:
+            return f"SOURCE: {label}\nURL: {url}\n" + "\n".join(results)
+        else:
+            return f"SOURCE: {label}\nURL: {url}\nNO ITEMS FOUND (feed empty or format unrecognised)"
     except Exception as e:
         return f"SOURCE: {label}\nURL: {url}\nERROR: {e}"
 
@@ -163,10 +191,14 @@ BRIEF_SYSTEM = (
     "\n1. BLUF - 2-3 sentence summary of most important intelligence"
     "\n2. KEY FINDINGS - HTML table: Rating | Source | Date | Finding"
     "\n   (minimum 4 rows of real findings from the intelligence provided)"
-    "\n3. SOCMINT - social media intelligence table: Platform | Handle | Date | Finding"
-    "\n   Pull from Nitter feeds (@eurofencing, @FIEfencing) and any Google News social refs."
-    "\n   Always include rows for: EFC Twitter, FIE Twitter, CyrusofChaos Facebook, EFC Instagram."
-    "\n   If a platform was inaccessible, note that in the Finding column."
+    "\n3. SOCMINT - social media intelligence section with two sub-tables:"
+    "\n   TABLE A - Platform Activity (Platform | Handle | Date | Content Summary):"
+    "\n   Use the SOCMINT-labelled sources. If Nitter returned posts, cite them (C-3)."
+    "\n   If Nitter returned NO ITEMS or ERROR, use Google News SOCMINT sources instead."
+    "\n   Always produce a row for each: EFC Twitter @eurofencing,"
+    "\n   FIE Twitter @FIEfencing, CyrusofChaos Facebook, EFC Instagram @eurofencing."
+    "\n   Ratings: Nitter C-3; Google News social C-3; Facebook/Instagram D-3."
+    "\n   TABLE B - Social Narrative: one sentence per platform on tone and activity."
     "\n4. ASSESSMENT - analytical paragraph"
     "\n5. RECOMMENDATIONS TO EFC BUREAU - numbered list, min 3 items"
     "\n6. SOURCES ACCESSED - table: Name | URL | Rating | Status"
