@@ -28,41 +28,41 @@ SSL_BYPASS_SOURCES = [
 ]
 
 RSS_SOURCES = [
-    # British Fencing -- RSS avoids JS rendering issue
+    # British Fencing
     ("British Fencing News",
      "https://www.britishfencing.com/feed/"),
-    # InsideTheGames -- sport-specific RSS + Google News backup
+    # InsideTheGames sport RSS
     ("InsideTheGames Fencing",
      "https://www.insidethegames.biz/rss/sport/fencing"),
-    ("Google News InsideTheGames Fencing",
-     "https://news.google.com/rss/search?q=site:insidethegames.biz+fencing&hl=en&gl=US&ceid=US:en"),
-    # Google News -- EFC/FIE governance
+    # Google News -- broad fencing news
     ("Google News EFC FIE",
      "https://news.google.com/rss/search?q=EFC+FIE+fencing+European&hl=en&gl=US&ceid=US:en"),
-    # Google News -- fencing championships
     ("Google News Fencing 2026",
      "https://news.google.com/rss/search?q=fencing+championship+2026&hl=en&gl=US&ceid=US:en"),
-    # ---- SOCMINT sources ----
-    # Google News picks up EFC/FIE Twitter & Instagram posts via press coverage
-    ("SOCMINT Google News EFC Social",
-     "https://news.google.com/rss/search?q=%22European+Fencing+Confederation%22+OR+eurofencing&hl=en&gl=US&ceid=US:en"),
-    # CyrusofChaos Facebook -- most accessible via Google News search
-    ("SOCMINT Google News CyrusofChaos",
-     "https://news.google.com/rss/search?q=CyrusofChaos+fencing&hl=en&gl=US&ceid=US:en"),
-    # Usmanov / FIE governance social commentary
-    ("SOCMINT Google News FIE Governance",
-     "https://news.google.com/rss/search?q=%22Usmanov%22+fencing+OR+%22ElHusseiny%22+fencing&hl=en&gl=US&ceid=US:en"),
-    # EFC Instagram public page -- scrape public web viewer
-    ("SOCMINT EFC Instagram public",
-     "https://www.picuki.com/profile/eurofencing"),
-    # FIE Facebook public page -- Google News picks up posts
-    ("SOCMINT Google News FIE Facebook",
-     "https://news.google.com/rss/search?q=%22FIE+fencing%22+facebook+OR+instagram&hl=en&gl=US&ceid=US:en"),
-    # Nitter X/Twitter mirrors -- try multiple instances for resilience
-    ("SOCMINT EFC Twitter Nitter-1",
-     "https://nitter.privacyredirect.com/eurofencing/rss"),
-    ("SOCMINT FIE Twitter Nitter-1",
-     "https://nitter.privacyredirect.com/FIEfencing/rss"),
+]
+
+# SOCMINT sources -- fetched separately with dedicated function
+SOCMINT_RSS = [
+    # Google News social refs -- simple queries, no %22 encoding issues
+    ("SOCMINT: EFC social media mentions",
+     "https://news.google.com/rss/search?q=eurofencing+fencing&hl=en&gl=US&ceid=US:en"),
+    ("SOCMINT: FIE Usmanov governance",
+     "https://news.google.com/rss/search?q=Usmanov+fencing+2026&hl=en&gl=US&ceid=US:en"),
+    ("SOCMINT: FIE ElHusseiny",
+     "https://news.google.com/rss/search?q=ElHusseiny+fencing&hl=en&gl=US&ceid=US:en"),
+    ("SOCMINT: CyrusofChaos",
+     "https://news.google.com/rss/search?q=CyrusofChaos&hl=en&gl=US&ceid=US:en"),
+]
+
+# Nitter instances to try in order (public X/Twitter mirrors, no auth needed)
+NITTER_ACCOUNTS = [
+    ("EFC Twitter", "eurofencing"),
+    ("FIE Twitter", "FIEfencing"),
+]
+NITTER_INSTANCES = [
+    "https://nitter.privacyredirect.com",
+    "https://nitter.poast.org",
+    "https://nitter.net",
 ]
 
 HEADERS = {
@@ -134,23 +134,95 @@ def fetch_rss(label, url, max_items=12):
     except Exception as e:
         return f"SOURCE: {label}\nURL: {url}\nERROR: {e}"
 
-print(f"Fetching {len(SOURCES)} pages, {len(SSL_BYPASS_SOURCES)} SSL-bypass pages, and {len(RSS_SOURCES)} RSS feeds...")
+def fetch_nitter_rss(handle, instances, max_items=10):
+    """Try multiple Nitter instances for a Twitter/X handle RSS feed."""
+    for base in instances:
+        url = f"{base}/{handle}/rss"
+        try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0 (compatible; EFC-Intel/1.0)",
+                "Accept": "application/rss+xml, application/xml, */*",
+            })
+            with urllib.request.urlopen(req, timeout=12, context=ctx) as resp:
+                text = resp.read().decode("utf-8", errors="ignore")
+            items = re.findall(r'<item>(.*?)</item>', text, re.DOTALL)
+            if not items:
+                continue
+            results = []
+            for item in items[:max_items]:
+                title   = re.search(r'<title[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>', item, re.DOTALL)
+                link    = re.search(r'<link>(.*?)</link>', item, re.DOTALL)
+                pubdate = re.search(r'<pubDate>(.*?)</pubDate>', item)
+                t = strip_html(title.group(1)).strip() if title else ""
+                l = link.group(1).strip() if link else ""
+                p = pubdate.group(1).strip() if pubdate else ""
+                if t:
+                    results.append(f"  [{p}] {t}\n  URL: {l}")
+            if results:
+                return f"SOCMINT SOURCE: @{handle} via Nitter ({base})\n" + "\n".join(results)
+        except Exception:
+            continue
+    return f"SOCMINT SOURCE: @{handle} (Twitter/X)\nSTATUS: All Nitter instances unreachable -- no live data"
+
+print(f"Fetching sources...")
 intel_chunks = []
+source_log = []  # track what each source returned for diagnostics
 
 for label, url in SOURCES:
-    intel_chunks.append(fetch_html(label, url, verify_ssl=True))
+    result = fetch_html(label, url, verify_ssl=True)
+    intel_chunks.append(result)
+    status = "ERROR" if "ERROR:" in result else f"{len(result)} chars"
+    print(f"  {label}: {status}")
+    source_log.append((label, url, "page", status))
     time.sleep(0.5)
 
 for label, url in SSL_BYPASS_SOURCES:
-    intel_chunks.append(fetch_html(label, url, verify_ssl=False))
+    result = fetch_html(label, url, verify_ssl=False)
+    intel_chunks.append(result)
+    status = "ERROR" if "ERROR:" in result else f"{len(result)} chars"
+    print(f"  {label}: {status}")
+    source_log.append((label, url, "page-ssl-bypass", status))
     time.sleep(0.5)
 
 for label, url in RSS_SOURCES:
-    intel_chunks.append(fetch_rss(label, url))
+    result = fetch_rss(label, url)
+    intel_chunks.append(result)
+    status = "ERROR" if "ERROR:" in result else ("NO ITEMS" if "NO ITEMS" in result else f"{result.count(chr(10))} lines")
+    print(f"  {label}: {status}")
+    source_log.append((label, url, "rss", status))
     time.sleep(0.5)
 
+# SOCMINT RSS feeds
+socmint_chunks = []
+for label, url in SOCMINT_RSS:
+    result = fetch_rss(label, url)
+    socmint_chunks.append(result)
+    status = "ERROR" if "ERROR:" in result else ("NO ITEMS" if "NO ITEMS" in result else f"{result.count(chr(10))} lines")
+    print(f"  {label}: {status}")
+    source_log.append((label, url, "socmint-rss", status))
+    time.sleep(0.5)
+
+# Nitter feeds for Twitter/X
+for handle_label, handle in NITTER_ACCOUNTS:
+    result = fetch_nitter_rss(handle, NITTER_INSTANCES)
+    socmint_chunks.append(result)
+    status = "OK" if "Nitter" in result and "STATUS:" not in result else "UNREACHABLE"
+    print(f"  SOCMINT @{handle}: {status}")
+    source_log.append((handle_label, f"twitter.com/{handle}", "nitter", status))
+    time.sleep(0.5)
+
+# Build source log string to inject into prompt
+source_log_text = "\n".join(
+    f"  [{stype}] {label} | {url} | {status}"
+    for label, url, stype, status in source_log
+)
+
 intel_text = "\n\n".join(intel_chunks)
-print(f"Collected {len(intel_text)} chars of raw intelligence")
+socmint_text = "\n\n".join(socmint_chunks)
+print(f"Collected {len(intel_text)} chars intel, {len(socmint_text)} chars SOCMINT")
 
 # ---- Step 2: Claude writes the HTML brief (NO tools, pure writing) ----------
 
@@ -201,16 +273,30 @@ BRIEF_SYSTEM = (
     "\n   TABLE B - Social Narrative: one sentence per platform on tone and activity."
     "\n4. ASSESSMENT - analytical paragraph"
     "\n5. RECOMMENDATIONS TO EFC BUREAU - numbered list, min 3 items"
-    "\n6. SOURCES ACCESSED - table: Name | URL | Rating | Status"
+    "\n6. SOURCES ACCESSED - MANDATORY: include every single source from the fetch log."
+    "\n   Table columns: Name | URL | Rating | Fetch Status"
+    "\n   Copy the fetch status exactly from the log (e.g. '1234 chars', 'ERROR', 'NO ITEMS')."
+    "\n   This table must include ALL entries from the log including FFE, SOCMINT sources, Nitter."
     "\n7. CONFIDENCE ASSESSMENT - paragraph"
     "\n</body></html>"
 )
 
 BRIEF_USER = (
-    "Raw intelligence collected on " + TODAY + 
-    " (collection period: " + WEEK_AGO + " to " + TODAY + "):\n\n"
-    + intel_text[:10000]
-    + "\n\nWrite the complete HTML brief now. Extract and use every relevant fact from the above."
+    "=== COLLECTION METADATA ===\n"
+    "Date: " + TODAY + " | Period: " + WEEK_AGO + " to " + TODAY + "\n"
+    "Source fetch log:\n" + source_log_text + "\n\n"
+    "=== MAIN INTELLIGENCE (from official portals, news, RSS) ===\n"
+    + intel_text[:7000]
+    + "\n\n=== SOCMINT INTELLIGENCE (from social media feeds and Nitter) ===\n"
+    + socmint_text[:3000]
+    + "\n\n=== INSTRUCTIONS ===\n"
+    "Write the complete HTML brief now. "
+    "Use EVERY source in the fetch log for the Sources Assessed table -- list ALL of them "
+    "regardless of whether they returned data, with their actual status from the log. "
+    "For SOCMINT: use any data from the SOCMINT section above. "
+    "If a Nitter feed returned 'UNREACHABLE', note that status for that Twitter account. "
+    "If Google News SOCMINT feeds returned items, use them as social intelligence. "
+    "Do NOT write 'no data available' if there is relevant content in the sections above."
 )
 
 print("Calling Claude to write brief...")
