@@ -1,143 +1,164 @@
-import os, smtplib, datetime, time
+import os, smtplib, datetime, time, json
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+import urllib.request, urllib.parse, urllib.error
 import anthropic
 
 TODAY    = datetime.date.today().strftime("%d %B %Y")
 WEEK_AGO = (datetime.date.today() - datetime.timedelta(days=7)).strftime("%d %B %Y")
 
-# --- Step 1: collect raw intelligence via Anthropic web search in a SEPARATE call ---
-# We ask Claude to search and return a plain text intelligence dump first.
-# This keeps the token count predictable and avoids multi-turn tool loops.
+# -- Step 1: collect raw intelligence via direct web searches ------------------
+
+SEARCH_QUERIES = [
+    "eurofencing.info news fencing 2026",
+    "FIE fencing governance news March 2026",
+    "European fencing championship 2026",
+    "sportandpolitics.de fencing Usmanov 2026",
+    "FIE Usmanov ElHusseiny fencing news 2026",
+]
+
+def brave_search(query, api_key, num=5):
+    """Search using Brave Search API and return snippet text."""
+    url = "https://api.search.brave.com/res/v1/web/search"
+    params = urllib.parse.urlencode({"q": query, "count": num, "text_decorations": "0"})
+    req = urllib.request.Request(
+        f"{url}?{params}",
+        headers={
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+            "X-Subscription-Token": api_key,
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        results = []
+        for item in data.get("web", {}).get("results", []):
+            title   = item.get("title", "")
+            url_val = item.get("url", "")
+            snippet = item.get("description", "")
+            age     = item.get("age", "")
+            results.append(f"TITLE: {title}\nURL: {url_val}\nDATE: {age}\nSNIPPET: {snippet}")
+        return "\n\n".join(results) if results else "No results."
+    except Exception as e:
+        return f"Search error: {e}"
+
+def duckduckgo_search(query, num=5):
+    """Fallback: DuckDuckGo instant answers (no API key needed)."""
+    url = "https://api.duckduckgo.com/"
+    params = urllib.parse.urlencode({
+        "q": query, "format": "json", "no_html": "1", "skip_disambig": "1"
+    })
+    try:
+        req = urllib.request.Request(
+            f"{url}?{params}",
+            headers={"User-Agent": "EFC-Intel-Bot/1.0"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        results = []
+        abstract = data.get("AbstractText", "")
+        abstract_url = data.get("AbstractURL", "")
+        if abstract:
+            results.append(f"ABSTRACT: {abstract}\nURL: {abstract_url}")
+        for topic in data.get("RelatedTopics", [])[:num]:
+            if isinstance(topic, dict) and "Text" in topic:
+                results.append(f"TOPIC: {topic.get('Text','')}\nURL: {topic.get('FirstURL','')}")
+        return "\n\n".join(results) if results else "No results."
+    except Exception as e:
+        return f"Search error: {e}"
+
+# Collect intelligence
+brave_key = os.environ.get("BRAVE_API_KEY", "")
+intel_chunks = []
+
+for query in SEARCH_QUERIES:
+    time.sleep(1)  # polite delay
+    if brave_key:
+        result = brave_search(query, brave_key)
+    else:
+        result = duckduckgo_search(query)
+    intel_chunks.append(f"=== QUERY: {query} ===\n{result}")
+
+intel_text = "\n\n".join(intel_chunks)
+
+# -- Step 2: write the HTML brief from collected intelligence ------------------
 
 client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
-COLLECTION_SYSTEM = (
-    "You are an intelligence collector. Use web_search to gather raw information. "
-    "Search these queries one by one: "
-    "(1) eurofencing.info news March 2026, "
-    "(2) FIE fencing governance news 2026, "
-    "(3) European fencing championship 2026, "
-    "(4) sportandpolitics.de fencing 2026. "
-    "After all searches, return a plain text summary of every fact found, "
-    "with the source URL for each fact. No HTML. No analysis. Just facts and URLs."
-)
-
-COLLECTION_USER = "Collect intelligence for " + TODAY + ". Search all four queries now."
-
-tools = [{"type": "web_search_20250305", "name": "web_search"}]
-messages = [{"role": "user", "content": COLLECTION_USER}]
-
-def api_call(msgs, sys, max_tok=2000, use_tools=True):
-    for attempt in range(3):
-        try:
-            kwargs = dict(
-                model="claude-sonnet-4-20250514",
-                max_tokens=max_tok,
-                system=sys,
-                messages=msgs,
-            )
-            if use_tools:
-                kwargs["tools"] = tools
-            return client.messages.create(**kwargs)
-        except anthropic.RateLimitError:
-            if attempt < 2:
-                time.sleep(60)
-            else:
-                raise
-
-# Run collection loop
-for _ in range(15):
-    resp = api_call(messages, COLLECTION_SYSTEM, max_tok=2000, use_tools=True)
-    messages.append({"role": "assistant", "content": resp.content})
-
-    if resp.stop_reason == "end_turn":
-        break
-
-    if resp.stop_reason == "tool_use":
-        results = []
-        for block in resp.content:
-            if block.type == "tool_use":
-                results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": "Search executed.",
-                })
-        messages.append({"role": "user", "content": results})
-        continue
-    break
-
-# Extract collected intelligence text
-intel_text = ""
-for block in resp.content:
-    if hasattr(block, "text") and block.text.strip():
-        intel_text = block.text.strip()
-        break
-
-if not intel_text:
-    intel_text = "No intelligence collected from web searches."
-
-# --- Step 2: write the HTML brief from the collected intelligence ---
 BRIEF_SYSTEM = (
     "You are the EFC Intelligence Officer. TODAY IS " + TODAY + ". "
-    "Write a complete HTML intelligence brief for the EFC Bureau using the raw intelligence provided. "
+    "Write a complete HTML intelligence brief for the EFC Bureau "
+    "using ONLY the raw search intelligence provided in the user message. "
     "Apply NATO STANAG 2511 ratings (A-F reliability, 1-6 credibility). "
     "Rate eurofencing.info as A-1. Cite every claim with its source URL. "
-    "Name only individuals that appear in the source material. "
+    "Name only individuals that appear in the provided source material. "
     "All recommendations go to EFC Bureau. "
-    "Return ONLY complete raw HTML with inline CSS. No markdown. "
-    "HEADER: full-width table row, background-color:#213389, white bold centered text, "
-    "two lines: 'EUROPEAN FENCING CONFEDERATION DAILY INTELLIGENCE BRIEF' and date/period. "
-    "SECTIONS (each with a #213389 dark blue subheader row): "
-    "1. BLUF (2-3 sentence summary), "
-    "2. Key Findings (HTML table: Rating | Source | Date | Detail), "
-    "3. Assessment, "
-    "4. Recommendations to EFC Bureau (numbered list), "
-    "5. Sources (table: Source | URL | Rating | Last accessed), "
-    "6. Confidence Assessment. "
-    "All sections must have substantive content based on the intelligence provided."
+    "Return ONLY complete raw HTML with inline CSS -- no markdown, no fences, no preamble. "
+    "REQUIRED HTML STRUCTURE:\n"
+    "<html><body style='font-family:Arial,sans-serif;margin:0;padding:0'>\n"
+    "<!-- Full-width EFC blue header -->\n"
+    "<table width='100%'...> with background #213389, white text: title + date/period\n"
+    "<!-- Each section has a subheader row background #1a2970, white text -->\n"
+    "Section 1: BLUF (2-3 sentences of real intelligence)\n"
+    "Section 2: Key Findings (HTML table, columns: Rating | Source | Date | Detail -- "
+    "must have at least 3 rows of real findings)\n"
+    "Section 3: Assessment (paragraph of real analysis)\n"
+    "Section 4: Recommendations to EFC Bureau (numbered list, minimum 3 items)\n"
+    "Section 5: Sources (table: Source Name | URL | Rating | Date)\n"
+    "Section 6: Confidence Assessment\n"
+    "</body></html>"
 )
 
 BRIEF_USER = (
-    "Raw intelligence collected for " + TODAY + " (period " + WEEK_AGO + " to " + TODAY + "):\n\n"
-    + intel_text
-    + "\n\nNow write the complete HTML brief."
+    "Raw intelligence collected " + TODAY + " (period " + WEEK_AGO + " to " + TODAY + "):\n\n"
+    + intel_text[:8000]  # cap to avoid token limits
+    + "\n\nWrite the complete HTML brief now. Every section must contain real content from the above intelligence."
 )
 
-brief_resp = api_call(
-    [{"role": "user", "content": BRIEF_USER}],
-    BRIEF_SYSTEM,
-    max_tok=4000,
-    use_tools=False,
-)
+for attempt in range(3):
+    try:
+        resp = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4000,
+            system=BRIEF_SYSTEM,
+            messages=[{"role": "user", "content": BRIEF_USER}],
+        )
+        break
+    except anthropic.RateLimitError:
+        if attempt < 2:
+            time.sleep(60)
+        else:
+            raise
 
 html = ""
-for block in brief_resp.content:
-    if hasattr(block, "text") and len(block.text.strip()) > 100:
+for block in resp.content:
+    if hasattr(block, "text") and len(block.text.strip()) > 200:
         html = block.text.strip()
         break
 
-# Strip markdown fences
+# Strip fences
 if html.startswith("```"):
     lines = html.splitlines()
     html = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
 
-# Fallback
-if not html or len(html) < 200:
+# Fallback with intel dump so at least the data is visible
+if not html or len(html) < 300:
+    escaped = intel_text[:3000].replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
     html = (
         "<html><body style='font-family:Arial,sans-serif;margin:0'>"
-        "<table width='100%' cellpadding='0' cellspacing='0'><tr>"
-        "<td style='background:#213389;padding:20px;text-align:center'>"
-        "<p style='color:white;font-size:20px;font-weight:bold;margin:0'>"
+        "<table width='100%'><tr><td style='background:#213389;padding:20px;text-align:center'>"
+        "<p style='color:white;font-size:18px;font-weight:bold;margin:0'>"
         "EUROPEAN FENCING CONFEDERATION DAILY INTELLIGENCE BRIEF</p>"
-        "<p style='color:#9DD1F4;margin:5px 0 0'>" + TODAY + " | Generation failed</p>"
+        "<p style='color:#9DD1F4;margin:4px 0 0'>" + TODAY + " | HTML generation failed</p>"
         "</td></tr><tr><td style='padding:20px'>"
-        "<p>Brief generation failed. Check GitHub Actions logs.</p>"
-        "<pre>" + intel_text[:500] + "</pre>"
+        "<h3>Raw Intelligence Collected (fallback display):</h3>"
+        "<pre style='white-space:pre-wrap;font-size:12px'>" + escaped + "</pre>"
         "</td></tr></table></body></html>"
     )
 
-# --- Step 3: send email ---
+# -- Step 3: send email --------------------------------------------------------
+
 msg = MIMEMultipart("alternative")
 msg["Subject"] = "EFC Intelligence Brief - " + TODAY
 msg["From"]    = os.environ["GMAIL_ADDRESS"]
@@ -148,4 +169,4 @@ with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
     s.login(os.environ["GMAIL_ADDRESS"], os.environ["GMAIL_APP_PASSWORD"])
     s.sendmail(os.environ["GMAIL_ADDRESS"], "evcann@fencing-efc.eu", msg.as_string())
 
-print("Sent | " + TODAY + " | intel chars: " + str(len(intel_text)) + " | HTML chars: " + str(len(html)))
+print("Sent | " + TODAY + " | intel: " + str(len(intel_text)) + " chars | html: " + str(len(html)) + " chars")
