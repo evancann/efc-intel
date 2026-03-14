@@ -17,7 +17,7 @@ SOURCES = [
     ("FIE News",          "https://fie.org/articles"),
     ("Sport&Politics",    "https://www.sportandpolitics.de"),
     ("Francsjeux EN",     "https://www.francsjeux.com/en"),
-    ("InsideTheGames",    "https://www.insidethegames.biz/search?q=fencing"),
+    ("The Inquisitor",    "https://www.the-inquisitor-magazine.com"),
 ]
 
 # Sources requiring SSL bypass (self-signed or expired cert)
@@ -26,13 +26,30 @@ SSL_BYPASS_SOURCES = [
 ]
 
 RSS_SOURCES = [
-    # British Fencing is JS-rendered; use their RSS feed instead
-    ("British Fencing News RSS",
+    # British Fencing -- RSS avoids JS rendering issue
+    ("British Fencing News",
      "https://www.britishfencing.com/feed/"),
-    ("Google News - EFC FIE fencing",
+    # InsideTheGames -- RSS avoids 403 bot block on search page
+    ("InsideTheGames Fencing",
+     "https://www.insidethegames.biz/rss/sport/fencing"),
+    # Google News -- EFC/FIE governance
+    ("Google News EFC FIE",
      "https://news.google.com/rss/search?q=EFC+FIE+fencing+European&hl=en&gl=US&ceid=US:en"),
-    ("Google News - fencing championship 2026",
+    # Google News -- fencing championships
+    ("Google News Fencing 2026",
      "https://news.google.com/rss/search?q=fencing+championship+2026&hl=en&gl=US&ceid=US:en"),
+    # Google News -- EFC social/comms picked up by press
+    ("Google News EFC Social",
+     "https://news.google.com/rss/search?q=%22European+Fencing+Confederation%22+OR+eurofencing&hl=en&gl=US&ceid=US:en"),
+    # Google News -- CyrusofChaos + Usmanov FIE commentary
+    ("Google News CyrusofChaos FIE",
+     "https://news.google.com/rss/search?q=CyrusofChaos+OR+%22Usmanov%22+fencing&hl=en&gl=US&ceid=US:en"),
+    # Nitter (public X/Twitter mirror) -- EFC official account
+    ("EFC Twitter via Nitter",
+     "https://nitter.poast.org/eurofencing/rss"),
+    # Nitter -- FIE official account
+    ("FIE Twitter via Nitter",
+     "https://nitter.poast.org/FIEfencing/rss"),
 ]
 
 HEADERS = {
@@ -115,11 +132,15 @@ BRIEF_SYSTEM = (
     "and write a professional HTML intelligence brief for the EFC Bureau. "
     "\n\nINSTRUCTIONS:"
     "\n- Extract every fact about EFC, FIE, competitions, governance, personnel from the sources."
-    "\n- Apply NATO STANAG 2511 ratings: eurofencing.info = A-1, FIE official = A-1, "
-    "news outlets = B-2, blogs/social = C-3, unverified = D-4."
+    "\n- Apply NATO STANAG 2511 ratings: eurofencing.info = A-1, FIE official letters = A-1, "
+    "InsideTheGames/BritishFencing = B-2, Google News/press = B-2, "
+    "Nitter/Twitter = C-3, social media/CyrusofChaos = D-3, unverified = D-4."
     "\n- Cite the source URL for every claim. Only name individuals who appear in the sources."
     "\n- If a source returned an error, note it and move on."
     "\n- All recommendations go to EFC Bureau."
+    "\n- Include a dedicated SOCMINT sub-section under Key Findings for any social media "
+    "intelligence from Twitter/Nitter, Facebook references, Instagram, or CyrusofChaos. "
+    "Label social media entries clearly with platform and handle."
     "\n\nHTML REQUIREMENTS:"
     "\n- Return ONLY raw HTML with inline CSS. No markdown. No code fences."
     "\n- Every section must have real content. Do NOT write 'no intelligence found'."
@@ -140,12 +161,16 @@ BRIEF_SYSTEM = (
     "\n<tr><td style='padding:15px 20px;color:#222'>CONTENT</td></tr></table>"
     "\n\nSECTIONS REQUIRED:"
     "\n1. BLUF - 2-3 sentence summary of most important intelligence"
-    "\n2. KEY FINDINGS - HTML table (border,padding): Rating | Source | Date | Finding"
-    "\n   (minimum 4 rows, use real data from sources)"
-    "\n3. ASSESSMENT - analytical paragraph"
-    "\n4. RECOMMENDATIONS TO EFC BUREAU - numbered list, min 3 items"
-    "\n5. SOURCES ACCESSED - table: Name | URL | Rating | Status"
-    "\n6. CONFIDENCE ASSESSMENT - paragraph"
+    "\n2. KEY FINDINGS - HTML table: Rating | Source | Date | Finding"
+    "\n   (minimum 4 rows of real findings from the intelligence provided)"
+    "\n3. SOCMINT - social media intelligence table: Platform | Handle | Date | Finding"
+    "\n   Pull from Nitter feeds (@eurofencing, @FIEfencing) and any Google News social refs."
+    "\n   Always include rows for: EFC Twitter, FIE Twitter, CyrusofChaos Facebook, EFC Instagram."
+    "\n   If a platform was inaccessible, note that in the Finding column."
+    "\n4. ASSESSMENT - analytical paragraph"
+    "\n5. RECOMMENDATIONS TO EFC BUREAU - numbered list, min 3 items"
+    "\n6. SOURCES ACCESSED - table: Name | URL | Rating | Status"
+    "\n7. CONFIDENCE ASSESSMENT - paragraph"
     "\n</body></html>"
 )
 
