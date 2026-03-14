@@ -30,14 +30,3 @@ with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
     s.sendmail(os.environ["GMAIL_ADDRESS"], "evcann@fencing-efc.eu", msg.as_string())
 
 print("Brief sent successfully")
-```
-
-Click **Commit changes**
-
----
-
-**Step 4 - Create the workflow file**
-
-Click **Add file → Create new file** → in the filename box type:
-```
-.github/workflows/daily.yml
