@@ -6,77 +6,118 @@ import anthropic
 TODAY    = datetime.date.today().strftime("%d %B %Y")
 WEEK_AGO = (datetime.date.today() - datetime.timedelta(days=7)).strftime("%d %B %Y")
 
-SYSTEM = (
-    "You are the EFC Intelligence Officer. TODAY IS " + TODAY + ". "
-    "Use web_search to collect intelligence, then write a complete HTML intelligence brief. "
-    "Search these targets: eurofencing.info news, fie.org fencing news 2026, "
-    "FIE governance fencing 2026, European fencing championship 2026. "
-    "Apply NATO STANAG 2511 ratings. Rate eurofencing.info as A-1. "
-    "Cite every claim with a URL. Name only verified individuals. "
-    "Recommendations go to EFC Bureau. "
-    "Return ONLY complete raw HTML with inline CSS. "
-    "Header: full-width, background #213389, white bold text, centered. "
-    "Sections: BLUF, Key Findings table (Rating/Source/Date/Detail), "
-    "Assessment, Recommendations to EFC Bureau, Sources, Confidence. "
-    "No markdown. No empty sections. Complete self-contained HTML."
-)
-
-USER = (
-    "EFC Daily Intelligence Brief for " + TODAY + ". "
-    "Period: " + WEEK_AGO + " to " + TODAY + ". "
-    "Search now then return the complete HTML brief."
-)
+# --- Step 1: collect raw intelligence via Anthropic web search in a SEPARATE call ---
+# We ask Claude to search and return a plain text intelligence dump first.
+# This keeps the token count predictable and avoids multi-turn tool loops.
 
 client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-tools  = [{"type": "web_search_20250305", "name": "web_search"}]
 
-def call_with_retry(messages, max_retries=3):
-    for attempt in range(max_retries):
+COLLECTION_SYSTEM = (
+    "You are an intelligence collector. Use web_search to gather raw information. "
+    "Search these queries one by one: "
+    "(1) eurofencing.info news March 2026, "
+    "(2) FIE fencing governance news 2026, "
+    "(3) European fencing championship 2026, "
+    "(4) sportandpolitics.de fencing 2026. "
+    "After all searches, return a plain text summary of every fact found, "
+    "with the source URL for each fact. No HTML. No analysis. Just facts and URLs."
+)
+
+COLLECTION_USER = "Collect intelligence for " + TODAY + ". Search all four queries now."
+
+tools = [{"type": "web_search_20250305", "name": "web_search"}]
+messages = [{"role": "user", "content": COLLECTION_USER}]
+
+def api_call(msgs, sys, max_tok=2000, use_tools=True):
+    for attempt in range(3):
         try:
-            return client.messages.create(
+            kwargs = dict(
                 model="claude-sonnet-4-20250514",
-                max_tokens=4000,
-                system=SYSTEM,
-                tools=tools,
-                messages=messages,
+                max_tokens=max_tok,
+                system=sys,
+                messages=msgs,
             )
+            if use_tools:
+                kwargs["tools"] = tools
+            return client.messages.create(**kwargs)
         except anthropic.RateLimitError:
-            if attempt < max_retries - 1:
+            if attempt < 2:
                 time.sleep(60)
             else:
                 raise
 
-messages = [{"role": "user", "content": USER}]
+# Run collection loop
+for _ in range(15):
+    resp = api_call(messages, COLLECTION_SYSTEM, max_tok=2000, use_tools=True)
+    messages.append({"role": "assistant", "content": resp.content})
 
-# Agentic loop -- max 10 turns to avoid runaway token usage
-html = ""
-for turn in range(10):
-    response = call_with_retry(messages)
-    messages.append({"role": "assistant", "content": response.content})
-
-    if response.stop_reason == "end_turn":
-        for block in response.content:
-            if hasattr(block, "text") and len(block.text.strip()) > 200:
-                html = block.text.strip()
-                break
+    if resp.stop_reason == "end_turn":
         break
 
-    if response.stop_reason == "tool_use":
-        tool_results = []
-        for block in response.content:
+    if resp.stop_reason == "tool_use":
+        results = []
+        for block in resp.content:
             if block.type == "tool_use":
-                tool_results.append({
+                results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
-                    "content": "Search completed successfully.",
+                    "content": "Search executed.",
                 })
-        if tool_results:
-            messages.append({"role": "user", "content": tool_results})
+        messages.append({"role": "user", "content": results})
         continue
-
     break
 
-# Strip markdown fences if present
+# Extract collected intelligence text
+intel_text = ""
+for block in resp.content:
+    if hasattr(block, "text") and block.text.strip():
+        intel_text = block.text.strip()
+        break
+
+if not intel_text:
+    intel_text = "No intelligence collected from web searches."
+
+# --- Step 2: write the HTML brief from the collected intelligence ---
+BRIEF_SYSTEM = (
+    "You are the EFC Intelligence Officer. TODAY IS " + TODAY + ". "
+    "Write a complete HTML intelligence brief for the EFC Bureau using the raw intelligence provided. "
+    "Apply NATO STANAG 2511 ratings (A-F reliability, 1-6 credibility). "
+    "Rate eurofencing.info as A-1. Cite every claim with its source URL. "
+    "Name only individuals that appear in the source material. "
+    "All recommendations go to EFC Bureau. "
+    "Return ONLY complete raw HTML with inline CSS. No markdown. "
+    "HEADER: full-width table row, background-color:#213389, white bold centered text, "
+    "two lines: 'EUROPEAN FENCING CONFEDERATION DAILY INTELLIGENCE BRIEF' and date/period. "
+    "SECTIONS (each with a #213389 dark blue subheader row): "
+    "1. BLUF (2-3 sentence summary), "
+    "2. Key Findings (HTML table: Rating | Source | Date | Detail), "
+    "3. Assessment, "
+    "4. Recommendations to EFC Bureau (numbered list), "
+    "5. Sources (table: Source | URL | Rating | Last accessed), "
+    "6. Confidence Assessment. "
+    "All sections must have substantive content based on the intelligence provided."
+)
+
+BRIEF_USER = (
+    "Raw intelligence collected for " + TODAY + " (period " + WEEK_AGO + " to " + TODAY + "):\n\n"
+    + intel_text
+    + "\n\nNow write the complete HTML brief."
+)
+
+brief_resp = api_call(
+    [{"role": "user", "content": BRIEF_USER}],
+    BRIEF_SYSTEM,
+    max_tok=4000,
+    use_tools=False,
+)
+
+html = ""
+for block in brief_resp.content:
+    if hasattr(block, "text") and len(block.text.strip()) > 100:
+        html = block.text.strip()
+        break
+
+# Strip markdown fences
 if html.startswith("```"):
     lines = html.splitlines()
     html = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
@@ -85,16 +126,18 @@ if html.startswith("```"):
 if not html or len(html) < 200:
     html = (
         "<html><body style='font-family:Arial,sans-serif;margin:0'>"
-        "<table width='100%'><tr><td style='background:#213389;padding:20px;text-align:center'>"
-        "<h1 style='color:white;margin:0'>EUROPEAN FENCING CONFEDERATION</h1>"
-        "<h2 style='color:white;margin:5px 0'>DAILY INTELLIGENCE BRIEF</h2>"
-        "<p style='color:#9DD1F4;margin:0'>" + TODAY + " | Generation failed -- check logs</p>"
+        "<table width='100%' cellpadding='0' cellspacing='0'><tr>"
+        "<td style='background:#213389;padding:20px;text-align:center'>"
+        "<p style='color:white;font-size:20px;font-weight:bold;margin:0'>"
+        "EUROPEAN FENCING CONFEDERATION DAILY INTELLIGENCE BRIEF</p>"
+        "<p style='color:#9DD1F4;margin:5px 0 0'>" + TODAY + " | Generation failed</p>"
         "</td></tr><tr><td style='padding:20px'>"
-        "<p>Brief generation produced no content. Check GitHub Actions logs.</p>"
+        "<p>Brief generation failed. Check GitHub Actions logs.</p>"
+        "<pre>" + intel_text[:500] + "</pre>"
         "</td></tr></table></body></html>"
     )
 
-# Send
+# --- Step 3: send email ---
 msg = MIMEMultipart("alternative")
 msg["Subject"] = "EFC Intelligence Brief - " + TODAY
 msg["From"]    = os.environ["GMAIL_ADDRESS"]
@@ -105,4 +148,4 @@ with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
     s.login(os.environ["GMAIL_ADDRESS"], os.environ["GMAIL_APP_PASSWORD"])
     s.sendmail(os.environ["GMAIL_ADDRESS"], "evcann@fencing-efc.eu", msg.as_string())
 
-print("Sent | " + TODAY + " | HTML chars: " + str(len(html)))
+print("Sent | " + TODAY + " | intel chars: " + str(len(intel_text)) + " | HTML chars: " + str(len(html)))
