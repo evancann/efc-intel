@@ -12,33 +12,43 @@ client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
 # ---- Step 1: Fetch real pages (GitHub Actions HAS internet access) ----------
 
+# All sources are fetched via RSS -- either native feeds or Google News RSS proxies.
+# Google News RSS acts as a reliable proxy for sites that block direct HTTP access.
+
+# Direct page fetch (these sites permit bot access)
 SOURCES = [
-    ("FIE Letters 2026",  "https://fie.org/fie/documents/letters/2026"),
-    ("FIE News",          "https://fie.org/articles"),
-    ("Sport&Politics",    "https://www.sportandpolitics.de"),
-    ("Francsjeux EN",     "https://www.francsjeux.com/en"),
-    ("The Inquisitor",    "https://www.the-inquisitor-magazine.com"),
-    # FFE -- French Fencing Federation (hosts 2026 European Championships)
+    ("FIE Letters 2026",   "https://fie.org/fie/documents/letters/2026"),
+    ("FIE News",           "https://fie.org/articles"),
+    ("Sport&Politics",     "https://www.sportandpolitics.de"),
+    ("Francsjeux EN",      "https://www.francsjeux.com/en"),
+    ("The Inquisitor",     "https://www.the-inquisitor-magazine.com"),
     ("FFE French Fencing", "https://www.ffescrime.fr/"),
 ]
 
-# Sources requiring SSL bypass (self-signed or expired cert)
+# SSL bypass needed for this host
 SSL_BYPASS_SOURCES = [
-    ("EFC Portal News",   "https://www.eurofencing.info/news"),
+    ("EFC Portal News",    "https://www.eurofencing.info/news"),
 ]
 
 RSS_SOURCES = [
-    # British Fencing -- primary feed + category backup
-    ("British Fencing News",
-     "https://www.britishfencing.com/feed/"),
-    ("British Fencing International",
-     "https://www.britishfencing.com/category/international-news/feed/"),
-    # InsideTheGames -- tag RSS (more reliable than sport RSS)
-    ("InsideTheGames Fencing",
-     "https://www.insidethegames.biz/tags/fencing/rss"),
-    ("InsideTheGames FIE",
-     "https://www.insidethegames.biz/tags/fie/rss"),
-    # Google News -- broad fencing news
+    # EFC Portal RSS (direct -- avoids SSL bypass for RSS)
+    ("EFC Portal RSS",
+     "https://www.eurofencing.info/rss"),
+    # FIE official RSS
+    ("FIE News RSS",
+     "https://fie.org/rss"),
+    # British Fencing -- Google News proxy (direct feed blocks bots)
+    ("British Fencing via Google News",
+     "https://news.google.com/rss/search?q=site:britishfencing.com&hl=en&gl=US&ceid=US:en"),
+    # InsideTheGames -- Google News proxy (direct RSS empty/blocked)
+    ("InsideTheGames Fencing via Google News",
+     "https://news.google.com/rss/search?q=site:insidethegames.biz+fencing&hl=en&gl=US&ceid=US:en"),
+    ("InsideTheGames FIE via Google News",
+     "https://news.google.com/rss/search?q=site:insidethegames.biz+FIE&hl=en&gl=US&ceid=US:en"),
+    # FFE via Google News proxy
+    ("FFE French Fencing via Google News",
+     "https://news.google.com/rss/search?q=site:ffescrime.fr&hl=en&gl=FR&ceid=FR:fr"),
+    # Broad EFC/FIE fencing news
     ("Google News EFC FIE",
      "https://news.google.com/rss/search?q=EFC+FIE+fencing+European&hl=en&gl=US&ceid=US:en"),
     ("Google News Fencing 2026",
@@ -47,23 +57,30 @@ RSS_SOURCES = [
 
 # SOCMINT sources -- fetched separately with dedicated function
 SOCMINT_RSS = [
-    # Google News social refs -- simple queries, no %22 encoding issues
-    ("SOCMINT: EFC social media mentions",
-     "https://news.google.com/rss/search?q=eurofencing+fencing&hl=en&gl=US&ceid=US:en"),
-    ("SOCMINT: FIE Usmanov governance",
+    # EFC Twitter @eurofencing -- Google News indexes tweets via press pickup
+    ("SOCMINT: EFC Twitter @eurofencing",
+     "https://news.google.com/rss/search?q=eurofencing+Twitter&hl=en&gl=US&ceid=US:en"),
+    # FIE Twitter @FIEfencing -- Google News proxy (direct Twitter blocked)
+    ("SOCMINT: FIE Twitter @FIEfencing",
+     "https://news.google.com/rss/search?q=FIEfencing+fencing&hl=en&gl=US&ceid=US:en"),
+    # CyrusofChaos Facebook -- Google News indexes public posts
+    ("SOCMINT: CyrusofChaos Facebook",
+     "https://news.google.com/rss/search?q=CyrusofChaos+fencing&hl=en&gl=US&ceid=US:en"),
+    # EFC Instagram @eurofencing
+    ("SOCMINT: EFC Instagram",
+     "https://news.google.com/rss/search?q=eurofencing+Instagram&hl=en&gl=US&ceid=US:en"),
+    # FIE governance social commentary
+    ("SOCMINT: FIE Usmanov ElHusseiny",
      "https://news.google.com/rss/search?q=Usmanov+fencing+2026&hl=en&gl=US&ceid=US:en"),
     ("SOCMINT: FIE ElHusseiny",
      "https://news.google.com/rss/search?q=ElHusseiny+fencing&hl=en&gl=US&ceid=US:en"),
-    ("SOCMINT: CyrusofChaos",
-     "https://news.google.com/rss/search?q=CyrusofChaos&hl=en&gl=US&ceid=US:en"),
 ]
 
-# Nitter instances to try in order (public X/Twitter mirrors, no auth needed)
+# Nitter instances -- kept as best-effort; Twitter syndication API used as fallback
 NITTER_ACCOUNTS = [
     ("EFC Twitter", "eurofencing"),
     ("FIE Twitter", "FIEfencing"),
 ]
-# Extended list of public Nitter instances -- tried in order until one responds
 NITTER_INSTANCES = [
     "https://nitter.privacyredirect.com",
     "https://nitter.poast.org",
@@ -277,15 +294,17 @@ BRIEF_SYSTEM = (
     "and write a professional HTML intelligence brief for the EFC Bureau. "
     "\n\nINSTRUCTIONS:"
     "\n- Extract every fact about EFC, FIE, competitions, governance, personnel from the sources."
-    "\n- Apply NATO STANAG 2511 ratings: eurofencing.info = A-1, FIE official letters = A-1, "
-    "InsideTheGames/BritishFencing = B-2, Google News/press = B-2, "
-    "Nitter/Twitter = C-3, social media/CyrusofChaos = D-3, unverified = D-4."
-    "\n- Cite the source URL for every claim. Only name individuals who appear in the sources."
-    "\n- If a source returned an error, note it and move on."
+    "\n- Apply NATO STANAG 2511 ratings:"
+    "\n  eurofencing.info direct fetch = A-1; FIE official letters = A-1;"
+    "\n  Sport&Politics/Francsjeux/Inquisitor = B-2; InsideTheGames = B-2;"
+    "\n  British Fencing = B-2; FFE = B-2; Google News RSS = B-2;"
+    "\n  SOCMINT Google News proxy = C-3; Nitter/Twitter syndication = C-3;"
+    "\n  CyrusofChaos Facebook/Instagram = D-3."
+    "\n- When a source label says 'via Google News', the rating applies to the "
+    "underlying outlet (e.g. InsideTheGames via Google News = B-2)."
+    "\n- Cite the source URL for every claim. Only name individuals in the sources."
+    "\n- If a source returned an error or NO ITEMS, note it and move on."
     "\n- All recommendations go to EFC Bureau."
-    "\n- Include a dedicated SOCMINT sub-section under Key Findings for any social media "
-    "intelligence from Twitter/Nitter, Facebook references, Instagram, or CyrusofChaos. "
-    "Label social media entries clearly with platform and handle."
     "\n\nHTML REQUIREMENTS:"
     "\n- Return ONLY raw HTML with inline CSS. No markdown. No code fences."
     "\n- Every section must have real content. Do NOT write 'no intelligence found'."
